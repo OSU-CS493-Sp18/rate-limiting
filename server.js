@@ -15,6 +15,6 @@ app.use('*', function (req, res, next) {
   });
 });
 
-  app.listen(port, function() {
-    console.log("== Server is running on port", port);
-  });
+app.listen(port, function() {
+  console.log("== Server is running on port", port);
+});
