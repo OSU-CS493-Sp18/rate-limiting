@@ -8,6 +8,9 @@ const redisHost = process.env.REDIS_HOST;
 const redisPort = process.env.REDIS_PORT || '6379';
 const redisClient = redis.createClient(redisPort, redisHost);
 
+const windowMilliseconds = 60000;
+const windowMaxRequests = 5;
+
 function getUserTokenBucket(ip) {
   return new Promise((resolve, reject) => {
     redisClient.hgetall(ip, function (err, tokenBucket) {
@@ -16,6 +19,8 @@ function getUserTokenBucket(ip) {
       } else {
         if (tokenBucket) {
           tokenBucket.tokens = parseFloat(tokenBucket.tokens);
+        } else {
+          tokenBucket = { tokens: windowMaxRequests, last: Date.now() };
         }
         resolve(tokenBucket);
       }
@@ -23,14 +28,44 @@ function getUserTokenBucket(ip) {
   });
 }
 
+function saveUserTokenBucket(ip, tokenBucket) {
+  return new Promise((resolve, reject) => {
+    redisClient.hmset(ip, tokenBucket, function (err, response) {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 function rateLimit(req, res, next) {
-  const windowMilliseconds = 60000;
-  const windowMaxRequests = 5;
-  const now = Date.now();
+  let userHasSufficientTokens = true;
   getUserTokenBucket(req.ip)
     .then((tokenBucket) => {
-      if (!tokenBucket) {
-        tokenBucket = { tokens: windowMaxRequests, last: now };
+      const timestamp = Date.now();
+      const elapsedMilliseconds = timestamp - tokenBucket.last;
+      const refreshRate = windowMaxRequests / windowMilliseconds;
+      tokenBucket.tokens += elapsedMilliseconds * refreshRate;
+      tokenBucket.tokens = Math.min(tokenBucket.tokens, windowMaxRequests);
+
+      if (tokenBucket.tokens < 1) {
+        userHasSufficientTokens = false;
+      } else {
+        tokenBucket.tokens -= 1;
+      }
+      tokenBucket.last = timestamp;
+
+      return saveUserTokenBucket(req.ip, tokenBucket);
+    })
+    .then(() => {
+      if (userHasSufficientTokens) {
+        next();
+      } else {
+        res.status(429).json({
+          error: "Too many requests per minute"
+        });
       }
     })
     .catch((err) => {
